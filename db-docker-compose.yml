@@ -1,0 +1,19 @@
+# sudo docker-compose -f db-docker-compose.yml --project-name erp up -d
+version: "3"
+
+services:
+
+  mariadb:
+    image: mariadb:10.3
+    restart: on-failure
+    environment:
+      - MYSQL_ROOT_PASSWORD=mysql
+    ports:
+      - "3306:3306"
+    volumes:
+      - ./config/frappe-mariadb.cnf:/etc/mysql/conf.d/frappe.cnf
+      - ./config/my.cnf:/etc/mysql/my.cnf
+      - mariadb-vol:/var/lib/mysql
+
+volumes:
+  mariadb-vol:

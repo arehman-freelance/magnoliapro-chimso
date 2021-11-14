@@ -1,0 +1,165 @@
+# sudo docker-compose -f app-docker-compose.yml --project-name erp up -d
+version: "3"
+
+services:
+  traefik:
+    image: "traefik:v2.2"
+    command:
+      - "--log.level=DEBUG"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--certificatesresolvers.myresolver.acme.httpchallenge=true"
+      - "--certificatesresolvers.myresolver.acme.httpchallenge.entrypoint=web"
+      - "--certificatesresolvers.myresolver.acme.email=chiso@example.com"
+      - "--certificatesresolvers.myresolver.acme.storage=/letsencrypt/acme.json"
+    labels:
+      # enable traefik
+      - "traefik.enable=true"
+      # global redirect to https for production only
+      - "traefik.http.routers.http-catchall.rule=hostregexp(`{host:.+}`)"
+      - "traefik.http.routers.http-catchall.entrypoints=web"
+      - "traefik.http.routers.http-catchall.middlewares=redirect-to-https"
+      # middleware redirect for production only
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - cert-vol:/letsencrypt
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    userns_mode: "host"
+
+  erpnext-nginx:
+    image: frappe/erpnext-nginx:version-13
+    restart: on-failure
+    environment:
+      - FRAPPE_PY=erpnext-python
+      - FRAPPE_PY_PORT=8000
+      - FRAPPE_SOCKETIO=frappe-socketio
+      - SOCKETIO_PORT=9000
+      - SKIP_NGINX_TEMPLATE_GENERATION=0
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.erpnext-nginx.rule=Host(${SITES})"
+      - "traefik.http.routers.erpnext-nginx.entrypoints=websecure"
+      - "traefik.http.routers.erpnext-nginx.tls.certresolver=myresolver"
+      - "traefik.http.services.erpnext-nginx.loadbalancer.server.port=80"
+    volumes:
+      - sites-vol:/var/www/html/sites:rw
+      - assets-vol:/assets:rw
+
+  erpnext-python:
+    image: frappe/erpnext-worker:version-13
+    restart: on-failure
+    environment:
+      - MARIADB_HOST=3.125.6.148
+      - REDIS_CACHE=redis-cache:6379
+      - REDIS_QUEUE=redis-queue:6379
+      - REDIS_SOCKETIO=redis-socketio:6379
+      - SOCKETIO_PORT=9000
+      - AUTO_MIGRATE=1
+      - WORKER_CLASS=gthread
+    volumes:
+      - sites-vol:/home/frappe/frappe-bench/sites:rw
+      - assets-vol:/home/frappe/frappe-bench/sites/assets:rw
+
+  frappe-socketio:
+    image: frappe/frappe-socketio:version-13
+    restart: on-failure
+    depends_on:
+      - redis-socketio
+    volumes:
+      - sites-vol:/home/frappe/frappe-bench/sites:rw
+      - logs-vol:/home/frappe/frappe-bench/logs:rw
+
+  erpnext-worker-default:
+    image: frappe/erpnext-worker:version-13
+    restart: on-failure
+    command: worker
+    depends_on:
+      - redis-queue
+      - redis-cache
+    volumes:
+      - sites-vol:/home/frappe/frappe-bench/sites:rw
+      - logs-vol:/home/frappe/frappe-bench/logs:rw
+
+  erpnext-worker-short:
+    image: frappe/erpnext-worker:version-13
+    restart: on-failure
+    command: worker
+    environment:
+      - WORKER_TYPE=short
+    depends_on:
+      - redis-queue
+      - redis-cache
+    volumes:
+      - sites-vol:/home/frappe/frappe-bench/sites:rw
+      - logs-vol:/home/frappe/frappe-bench/logs:rw
+
+  erpnext-worker-long:
+    image: frappe/erpnext-worker:version-13
+    restart: on-failure
+    command: worker
+    environment:
+      - WORKER_TYPE=long
+    depends_on:
+      - redis-queue
+      - redis-cache
+    volumes:
+      - sites-vol:/home/frappe/frappe-bench/sites:rw
+
+  erpnext-schedule:
+    image: frappe/erpnext-worker:version-13
+    restart: on-failure
+    command: schedule
+    depends_on:
+      - redis-queue
+      - redis-cache
+    volumes:
+      - sites-vol:/home/frappe/frappe-bench/sites:rw
+      - logs-vol:/home/frappe/frappe-bench/logs:rw
+
+  redis-cache:
+    image: redis:latest
+    restart: on-failure
+    volumes:
+      - redis-cache-vol:/data
+
+  redis-queue:
+    image: redis:latest
+    restart: on-failure
+    volumes:
+      - redis-queue-vol:/data
+
+  redis-socketio:
+    image: redis:latest
+    restart: on-failure
+    volumes:
+      - redis-socketio-vol:/data
+
+  site-creator:
+    image: frappe/erpnext-worker:version-13
+    restart: "no"
+    command: new
+    depends_on:
+      - erpnext-python
+    environment:
+      - SITE_NAME=${SITE_NAME}
+      - DB_ROOT_USER=root
+      - MYSQL_ROOT_PASSWORD=mysql
+      - ADMIN_PASSWORD=admin
+      - INSTALL_APPS=erpnext
+    volumes:
+      - sites-vol:/home/frappe/frappe-bench/sites:rw
+      - logs-vol:/home/frappe/frappe-bench/logs:rw
+
+volumes:
+  redis-cache-vol:
+  redis-queue-vol:
+  redis-socketio-vol:
+  assets-vol:
+  sites-vol:
+  cert-vol:
+  logs-vol:
